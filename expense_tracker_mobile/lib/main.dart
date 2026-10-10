@@ -1,40 +1,55 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:sqflite/sqflite.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'screens/dashboard_screen.dart';
-import 'screens/split_ledger_screen.dart';
-import 'screens/mandates_screen.dart';
+import 'screens/budget_screen.dart';
+import 'screens/categories_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Initialize FFI for Windows / Linux desktop
-  if (Platform.isWindows || Platform.isLinux) {
-    sqfliteFfiInit();
-    databaseFactory = databaseFactoryFfi;
-  }
-
-  runApp(const ProviderScope(child: ExpenseTrackerApp()));
+  runApp(const ProviderScope(child: TickApp()));
 }
 
-class ExpenseTrackerApp extends StatelessWidget {
-  const ExpenseTrackerApp({super.key});
+class TickApp extends StatelessWidget {
+  const TickApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Personal Expense & Split Tracker',
+      title: 'T.I.C.K.',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.indigo,
-          brightness: Brightness.light,
-        ),
+      themeMode: ThemeMode.dark,
+      darkTheme: ThemeData(
         useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF0F1117), // Deep dark slate
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF6366F1), // Modern Indigo Accent
+          secondary: Color(0xFF10B981), // Emerald Teal
+          surface: Color(0xFF181B26), // Card Background
+          error: Color(0xFFEF4444),
+          onPrimary: Colors.white,
+          onSurface: Color(0xFFF3F4F6),
+        ),
+        cardTheme: const CardThemeData(
+          color: Color(0xFF181B26),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+            side: BorderSide(color: Color(0xFF232838), width: 1),
+          ),
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF0F1117),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+        ),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: Color(0xFF141722),
+          selectedItemColor: Color(0xFF6366F1),
+          unselectedItemColor: Color(0xFF6B7280),
+          type: BottomNavigationBarType.fixed,
+        ),
       ),
       home: const MainNavigationShell(),
     );
@@ -53,32 +68,29 @@ class _MainNavigationShellState extends State<MainNavigationShell> {
 
   final List<Widget> _screens = const [
     DashboardScreen(),
-    SplitLedgerScreen(),
-    MandatesScreen(),
+    BudgetScreen(),
+    CategoriesScreen(),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_currentIndex],
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (idx) => setState(() => _currentIndex = idx),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard),
+      body: IndexedStack(index: _currentIndex, children: _screens),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.dashboard_rounded),
             label: 'Dashboard',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.group_outlined),
-            selectedIcon: Icon(Icons.group),
-            label: 'Split Ledger',
+          BottomNavigationBarItem(
+            icon: Icon(Icons.pie_chart_rounded),
+            label: 'Budgets',
           ),
-          NavigationDestination(
-            icon: Icon(Icons.event_repeat_outlined),
-            selectedIcon: Icon(Icons.event_repeat),
-            label: 'Mandates',
+          BottomNavigationBarItem(
+            icon: Icon(Icons.category_rounded),
+            label: 'Categories',
           ),
         ],
       ),

@@ -1,5 +1,7 @@
-import 'package:sqflite/sqflite.dart';
+import 'dart:async';
+
 import 'package:path/path.dart';
+import 'package:sqflite/sqflite.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -9,7 +11,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('expense_tracker.db');
+    _database = await _initDB('tick_expense_tracker_v2.db');
     return _database!;
   }
 
@@ -27,340 +29,268 @@ class DatabaseHelper {
     );
   }
 
-  Future _createDB(Database db, int version) async {
-    // 1. Accounts Table
+  Future<void> _createDB(Database db, int version) async {
+    // 1. Accounts / Sources (Initialized at 0.00)
     await db.execute('''
       CREATE TABLE accounts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        type TEXT CHECK(type IN ('CASH', 'SAVINGS', 'CREDIT_CARD', 'CUSTOM')) NOT NULL,
-        current_balance REAL NOT NULL DEFAULT 0.0,
-        credit_limit REAL DEFAULT 0.0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        name TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        current_balance REAL NOT NULL DEFAULT 0.00
       )
     ''');
 
-    // 2. Payment Methods Table
+    // 2. Payment Methods
     await db.execute('''
       CREATE TABLE payment_methods (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        default_account_id INTEGER,
-        requires_account_prompt INTEGER DEFAULT 0,
-        FOREIGN KEY (default_account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+        account_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES accounts (id) ON DELETE CASCADE
       )
     ''');
 
-    // 3. Budgets Table
+    // 3. Dynamic Categories
+    await db.execute('''
+      CREATE TABLE categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        icon_name TEXT DEFAULT 'category',
+        color_hex TEXT DEFAULT '0xFF6366F1'
+      )
+    ''');
+
+    // 4. Budgets
     await db.execute('''
       CREATE TABLE budgets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category TEXT NOT NULL,
+        category_name TEXT NOT NULL,
         monthly_limit REAL NOT NULL,
         month_year TEXT NOT NULL,
-        UNIQUE(category, month_year)
+        UNIQUE(category_name, month_year),
+        FOREIGN KEY (category_name) REFERENCES categories (name) ON UPDATE CASCADE ON DELETE CASCADE
       )
     ''');
 
-    // 4. Transactions Table
+    // 5. Transactions
     await db.execute('''
       CREATE TABLE transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        type TEXT CHECK(type IN ('EXPENSE', 'INCOME', 'TRANSFER', 'SETTLEMENT')) NOT NULL,
-        total_amount REAL NOT NULL,
-        my_share_amount REAL NOT NULL,
-        source_account_id INTEGER,
-        destination_account_id INTEGER,
-        payment_method_id INTEGER,
-        category TEXT,
-        notes TEXT,
-        transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (source_account_id) REFERENCES accounts(id) ON DELETE RESTRICT,
-        FOREIGN KEY (destination_account_id) REFERENCES accounts(id) ON DELETE RESTRICT,
-        FOREIGN KEY (payment_method_id) REFERENCES payment_methods(id) ON DELETE RESTRICT
-      )
-    ''');
-
-    // 5. Friends Table
-    await db.execute('''
-      CREATE TABLE friends (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        phone TEXT,
-        upi_id TEXT
-      )
-    ''');
-
-    // 6. Expense Splits Table
-    await db.execute('''
-      CREATE TABLE expense_splits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        transaction_id INTEGER NOT NULL,
-        friend_id INTEGER NOT NULL,
-        share_amount REAL NOT NULL,
-        is_settled INTEGER DEFAULT 0,
-        FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE,
-        FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE RESTRICT
-      )
-    ''');
-
-    // 7. Settlements Table
-    await db.execute('''
-      CREATE TABLE settlements (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        friend_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        destination_account_id INTEGER NOT NULL,
-        settled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (friend_id) REFERENCES friends(id) ON DELETE RESTRICT,
-        FOREIGN KEY (destination_account_id) REFERENCES accounts(id) ON DELETE RESTRICT
-      )
-    ''');
-
-    // 8. Mandates Table
-    await db.execute('''
-      CREATE TABLE mandates (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        amount REAL NOT NULL,
-        debit_day_of_month INTEGER NOT NULL CHECK(debit_day_of_month BETWEEN 1 AND 31),
-        payment_method_id INTEGER NOT NULL,
         source_account_id INTEGER NOT NULL,
-        category TEXT NOT NULL,
-        is_active INTEGER DEFAULT 1,
-        FOREIGN KEY (payment_method_id) REFERENCES payment_methods(id) ON DELETE RESTRICT,
-        FOREIGN KEY (source_account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+        payment_method_id INTEGER,
+        category_name TEXT NOT NULL,
+        total_amount REAL NOT NULL,
+        type TEXT NOT NULL DEFAULT 'EXPENSE',
+        notes TEXT,
+        transaction_date TEXT NOT NULL,
+        FOREIGN KEY (source_account_id) REFERENCES accounts (id) ON DELETE RESTRICT,
+        FOREIGN KEY (payment_method_id) REFERENCES payment_methods (id) ON DELETE SET NULL,
+        FOREIGN KEY (category_name) REFERENCES categories (name) ON UPDATE CASCADE ON DELETE RESTRICT
       )
     ''');
 
-    // 9. Mandate Logs Table
-    await db.execute('''
-      CREATE TABLE mandate_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mandate_id INTEGER NOT NULL,
-        month_year TEXT NOT NULL,
-        status TEXT CHECK(status IN ('PENDING', 'DEBITED', 'SKIPPED')) DEFAULT 'PENDING',
-        transaction_id INTEGER,
-        debited_at TIMESTAMP,
-        UNIQUE(mandate_id, month_year),
-        FOREIGN KEY (mandate_id) REFERENCES mandates(id) ON DELETE CASCADE,
-        FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
-      )
+    // Seed default baseline sources with ₹0.00
+    await db.rawInsert(
+      "INSERT INTO accounts (name, type, current_balance) VALUES ('Cash Wallet', 'CASH', 0.00)",
+    );
+    await db.rawInsert(
+      "INSERT INTO accounts (name, type, current_balance) VALUES ('Primary Bank', 'SAVINGS', 0.00)",
+    );
+
+    // Seed default payment methods linked to accounts
+    await db.rawInsert(
+      "INSERT INTO payment_methods (account_id, name, type) VALUES (1, 'Cash In Hand', 'CASH')",
+    );
+    await db.rawInsert(
+      "INSERT INTO payment_methods (account_id, name, type) VALUES (2, 'UPI / GPay', 'UPI')",
+    );
+    await db.rawInsert(
+      "INSERT INTO payment_methods (account_id, name, type) VALUES (2, 'Debit Card', 'DEBIT_CARD')",
+    );
+
+    // Seed default starter categories
+    final defaultCategories = [
+      'Food & Dining',
+      'Groceries',
+      'Fuel & Travel',
+      'Bills & Utilities',
+      'Entertainment',
+      'Shopping',
+      'Health & Medical',
+      'Investments',
+    ];
+    for (var cat in defaultCategories) {
+      await db.rawInsert("INSERT INTO categories (name) VALUES (?)", [cat]);
+    }
+  }
+
+  // --- Account CRUD ---
+  Future<List<Map<String, dynamic>>> getAccounts() async {
+    final db = await database;
+    return await db.query('accounts', orderBy: 'id ASC');
+  }
+
+  Future<int> addAccount(
+    String name,
+    String type,
+    double initialBalance,
+  ) async {
+    final db = await database;
+    return await db.insert('accounts', {
+      'name': name,
+      'type': type,
+      'current_balance': initialBalance,
+    });
+  }
+
+  Future<int> updateAccount(
+    int id,
+    String name,
+    String type,
+    double balance,
+  ) async {
+    final db = await database;
+    return await db.update(
+      'accounts',
+      {'name': name, 'type': type, 'current_balance': balance},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> deleteAccount(int id) async {
+    final db = await database;
+    return await db.delete('accounts', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- Payment Method CRUD ---
+  Future<List<Map<String, dynamic>>> getPaymentMethods() async {
+    final db = await database;
+    return await db.rawQuery('''
+      SELECT pm.id, pm.name, pm.type, pm.account_id, a.name AS account_name
+      FROM payment_methods pm
+      LEFT JOIN accounts a ON pm.account_id = a.id
+      ORDER BY pm.id ASC
     ''');
-
-    // Initial Seed of User's Actual Sources & Methods
-    await _seedInitialData(db);
   }
 
-  Future<void> _seedInitialData(Database db) async {
-    final sources = [
-      {'name': 'Cash Wallet', 'type': 'CASH', 'bal': 2000.0, 'limit': 0.0},
-      {
-        'name': 'HDFC Savings (Daily)',
-        'type': 'SAVINGS',
-        'bal': 10000.0,
-        'limit': 0.0,
-      },
-      {
-        'name': 'Indian Bank (EMI & Savings)',
-        'type': 'SAVINGS',
-        'bal': 15000.0,
-        'limit': 0.0,
-      },
-      {
-        'name': 'PNB (Personal Savings)',
-        'type': 'SAVINGS',
-        'bal': 25000.0,
-        'limit': 0.0,
-      },
-      {
-        'name': 'SBI Salary Account',
-        'type': 'SAVINGS',
-        'bal': 60000.0,
-        'limit': 0.0,
-      },
-      {
-        'name': 'IDFC Credit Card',
-        'type': 'CREDIT_CARD',
-        'bal': 0.0,
-        'limit': 35000.0,
-      },
-      {
-        'name': 'SBI Credit Card',
-        'type': 'CREDIT_CARD',
-        'bal': 0.0,
-        'limit': 76000.0,
-      },
-    ];
-
-    Map<String, int> accMap = {};
-    for (var s in sources) {
-      int id = await db.insert('accounts', {
-        'name': s['name'],
-        'type': s['type'],
-        'current_balance': s['bal'],
-        'credit_limit': s['limit'],
-      });
-      accMap[s['name'] as String] = id;
-    }
-
-    final methods = [
-      {'name': 'Cash', 'acc_id': accMap['Cash Wallet'], 'prompt': 0},
-      {
-        'name': 'GPay - HDFC',
-        'acc_id': accMap['HDFC Savings (Daily)'],
-        'prompt': 0,
-      },
-      {
-        'name': 'GPay - SBI - CC',
-        'acc_id': accMap['SBI Credit Card'],
-        'prompt': 0,
-      },
-      {
-        'name': 'GPay - IDFC - CC',
-        'acc_id': accMap['IDFC Credit Card'],
-        'prompt': 0,
-      },
-      {
-        'name': 'NetBanking / AutoDebit - Indian Bank',
-        'acc_id': accMap['Indian Bank (EMI & Savings)'],
-        'prompt': 0,
-      },
-      {
-        'name': 'NetBanking - SBI Salary',
-        'acc_id': accMap['SBI Salary Account'],
-        'prompt': 0,
-      },
-      {'name': 'Debit Card', 'acc_id': null, 'prompt': 1},
-    ];
-
-    for (var m in methods) {
-      await db.insert('payment_methods', {
-        'name': m['name'],
-        'default_account_id': m['acc_id'],
-        'requires_account_prompt': m['prompt'],
-      });
-    }
-  }
-
-  // --- Core Atomic Business Logic Methods ---
-
-  Future<void> logExpense({
-    required double amount,
-    required String category,
-    required int paymentMethodId,
-    int? overrideAccountId,
-    String notes = '',
-  }) async {
+  Future<int> addPaymentMethod(int accountId, String name, String type) async {
     final db = await database;
-    await db.transaction((txn) async {
-      // 1. Resolve funding account
-      final methodRes = await txn.query(
-        'payment_methods',
-        where: 'id = ?',
-        whereArgs: [paymentMethodId],
-      );
-      final method = methodRes.first;
-      int sourceAccId = (method['requires_account_prompt'] == 1)
-          ? overrideAccountId!
-          : method['default_account_id'] as int;
-
-      // 2. Deduct from account
-      await txn.rawUpdate(
-        'UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?',
-        [amount, sourceAccId],
-      );
-
-      // 3. Insert transaction
-      await txn.insert('transactions', {
-        'type': 'EXPENSE',
-        'total_amount': amount,
-        'my_share_amount': amount,
-        'source_account_id': sourceAccId,
-        'payment_method_id': paymentMethodId,
-        'category': category,
-        'notes': notes,
-      });
+    return await db.insert('payment_methods', {
+      'account_id': accountId,
+      'name': name,
+      'type': type,
     });
   }
 
-  Future<void> logSplitExpense({
-    required double totalAmount,
-    required double myShare,
-    required String category,
-    required int paymentMethodId,
-    required List<Map<String, dynamic>>
-    friendSplits, // [{'friend_id': 1, 'share': 500.0}]
-    int? overrideAccountId,
-    String notes = '',
-  }) async {
+  Future<int> updatePaymentMethod(
+    int id,
+    int accountId,
+    String name,
+    String type,
+  ) async {
     final db = await database;
-    await db.transaction((txn) async {
-      final methodRes = await txn.query(
-        'payment_methods',
-        where: 'id = ?',
-        whereArgs: [paymentMethodId],
-      );
-      int sourceAccId = (methodRes.first['requires_account_prompt'] == 1)
-          ? overrideAccountId!
-          : methodRes.first['default_account_id'] as int;
-
-      // Deduct full amount from payer
-      await txn.rawUpdate(
-        'UPDATE accounts SET current_balance = current_balance - ? WHERE id = ?',
-        [totalAmount, sourceAccId],
-      );
-
-      // Insert transaction with personal share
-      int txId = await txn.insert('transactions', {
-        'type': 'EXPENSE',
-        'total_amount': totalAmount,
-        'my_share_amount': myShare,
-        'source_account_id': sourceAccId,
-        'payment_method_id': paymentMethodId,
-        'category': category,
-        'notes': notes,
-      });
-
-      // Insert debt lines
-      for (var f in friendSplits) {
-        await txn.insert('expense_splits', {
-          'transaction_id': txId,
-          'friend_id': f['friend_id'],
-          'share_amount': f['share'],
-          'is_settled': 0,
-        });
-      }
-    });
+    return await db.update(
+      'payment_methods',
+      {'account_id': accountId, 'name': name, 'type': type},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
-  Future<void> settleUp({
-    required int friendId,
-    required double amount,
-    required int destinationAccountId,
-  }) async {
+  Future<int> deletePaymentMethod(int id) async {
     final db = await database;
-    await db.transaction((txn) async {
-      // Credit destination account
-      await txn.rawUpdate(
-        'UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?',
-        [amount, destinationAccountId],
+    return await db.delete('payment_methods', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // --- Category CRUD ---
+  Future<List<Map<String, dynamic>>> getCategories() async {
+    final db = await database;
+    return await db.query('categories', orderBy: 'name ASC');
+  }
+
+  Future<int> addCategory(String name) async {
+    final db = await database;
+    return await db.insert('categories', {'name': name});
+  }
+
+  Future<int> updateCategory(int id, String oldName, String newName) async {
+    final db = await database;
+    return await db.transaction((txn) async {
+      final res = await txn.update(
+        'categories',
+        {'name': newName},
+        where: 'id = ?',
+        whereArgs: [id],
       );
-
-      // Insert settlement record
-      await txn.insert('settlements', {
-        'friend_id': friendId,
-        'amount': amount,
-        'destination_account_id': destinationAccountId,
-      });
-
-      // Mark debts as settled
       await txn.update(
-        'expense_splits',
-        {'is_settled': 1},
-        where: 'friend_id = ? AND is_settled = 0',
-        whereArgs: [friendId],
+        'budgets',
+        {'category_name': newName},
+        where: 'category_name = ?',
+        whereArgs: [oldName],
       );
+      await txn.update(
+        'transactions',
+        {'category_name': newName},
+        where: 'category_name = ?',
+        whereArgs: [oldName],
+      );
+      return res;
     });
+  }
+
+  Future<int> deleteCategory(int id, String categoryName) async {
+    final db = await database;
+    return await db.transaction((txn) async {
+      await txn.delete(
+        'budgets',
+        where: 'category_name = ?',
+        whereArgs: [categoryName],
+      );
+      return await txn.delete('categories', where: 'id = ?', whereArgs: [id]);
+    });
+  }
+
+  // --- Budget CRUD ---
+  Future<List<Map<String, dynamic>>> getBudgets(String monthYear) async {
+    final db = await database;
+    return await db.rawQuery(
+      '''
+      SELECT 
+        b.id, b.category_name, b.monthly_limit,
+        COALESCE(SUM(t.total_amount), 0.0) AS spent
+      FROM budgets b
+      LEFT JOIN transactions t 
+        ON b.category_name = t.category_name 
+        AND strftime('%Y-%m', t.transaction_date) = b.month_year
+        AND t.type = 'EXPENSE'
+      WHERE b.month_year = ?
+      GROUP BY b.id, b.category_name, b.monthly_limit
+    ''',
+      [monthYear],
+    );
+  }
+
+  Future<int> setBudget(
+    String categoryName,
+    double limit,
+    String monthYear,
+  ) async {
+    final db = await database;
+    return await db.rawInsert(
+      '''
+      INSERT INTO budgets (category_name, monthly_limit, month_year)
+      VALUES (?, ?, ?)
+      ON CONFLICT(category_name, month_year) 
+      DO UPDATE SET monthly_limit = excluded.monthly_limit
+    ''',
+      [categoryName, limit, monthYear],
+    );
+  }
+
+  Future<int> deleteBudget(int id) async {
+    final db = await database;
+    return await db.delete('budgets', where: 'id = ?', whereArgs: [id]);
   }
 }
